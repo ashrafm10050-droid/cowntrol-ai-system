@@ -4,76 +4,104 @@ import numpy as np
 from PIL import Image
 import pandas as pd
 import requests
+import os
 from streamlit_autorefresh import st_autorefresh
- 
+
 st.set_page_config(page_title='Cowntrol AI System', page_icon='🐄', layout='centered')
 st_autorefresh(interval=2000, key='datarefresh')  # refresh every 2 s
- 
+
 # ===== Sidebar: connection settings =====
 st.sidebar.header('⚙️ Hardware Connection')
 mode = st.sidebar.radio('Connection Mode', ['Automatic (mDNS)', 'Manual IP'])
- 
+
 if mode == 'Automatic (mDNS)':
     ESP32_IP     = 'cowntrol-main.local'
     ESP32_CAM_IP = 'cowntrol-cam.local'
 else:
     ESP32_IP     = st.sidebar.text_input('Main ESP32 IP', '192.168.1.15')
     ESP32_CAM_IP = st.sidebar.text_input('ESP32-CAM IP',  '192.168.1.20')
- 
+
 st.markdown("<h1 style='text-align:center;color:#4CAF50;'>🐄 Cowntrol AI System</h1>",
             unsafe_allow_html=True)
 st.divider()
- 
-# ===== Load AI model =====
+
+# ===== دالة ذكية لتحميل الموديل من رابط خارجي تلقائياً =====
 @st.cache_resource
-def load_model(): return tf.keras.models.load_model('model.h5')
-model = load_model()
- 
+def load_model():
+    model_path = 'model.h5'
+    
+    # إذا كان الملف مش موجود على سيرفر Streamlit، هينزله تلقائياً
+    if not os.path.exists(model_path):
+        with st.spinner('⏳ جاري تحميل نموذج الذكاء الاصطناعي للسيرفر لأول مرة... انتظر لحظة'):
+            # 🛑 حط رابط الـ Google Drive بتاعك هنا مكان الرابط اللي تحت ده 🛑
+            url = 'https://YOUR_GOOGLE_DRIVE_DIRECT_DOWNLOAD_LINK_HERE'
+            
+            try:
+                response = requests.get(url, stream=True)
+                with open(model_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=8192):
+                        if chunk:
+                            f.write(chunk)
+            except Exception as e:
+                st.error(f"خطأ في تحميل الموديل: {e}")
+                
+    return tf.keras.models.load_model(model_path)
+
+# استدعاء الموديل
+try:
+    model = load_model()
+except Exception as e:
+    st.error(f"فشل في تحميل النموذج في الكيرامس: {e}")
+
 # ===== Live Camera =====
 st.subheader('📷 ESP32-CAM Live Feed')
 st.image(f'http://{ESP32_CAM_IP}:8080/stream',
          caption='Live Video', use_container_width=True)
- 
+
 # ===== Robot Control Panel =====
 st.divider()
 st.subheader('🕹️ Robot Navigation Control')
- 
+
 def move(cmd):
     try: requests.get(f'http://{ESP32_IP}/move?dir={cmd}', timeout=0.8)
     except: pass
- 
+
 _, fc, _ = st.columns([1,1,1])
 lc, mc, rc = st.columns([1,1,1])
 _, bc, _ = st.columns([1,1,1])
- 
+
 with fc:  fc.button('⬆️ Forward',  on_click=move, args=('F',), use_container_width=True)
 with lc:  lc.button('⬅️ Left',     on_click=move, args=('L',), use_container_width=True)
 with mc:  mc.button('🛑 Stop',     on_click=move, args=('S',), use_container_width=True)
 with rc:  rc.button('➡️ Right',    on_click=move, args=('R',), use_container_width=True)
 with bc:  bc.button('⬇️ Backward', on_click=move, args=('B',), use_container_width=True)
- 
+
 # ===== AI Health Detection =====
 st.divider()
 st.subheader('🧠 AI Health Detection')
 file = st.file_uploader('Upload Animal Image', type=['jpg','png','jpeg'])
- 
+
 if file:
     img_pil = Image.open(file)
     c1, c2  = st.columns(2)
     c1.image(img_pil, caption='Input', use_container_width=True)
     arr = np.expand_dims(np.array(img_pil.resize((128,128)))/255.0, 0)
-    pred  = model.predict(arr)
-    cidx  = int(np.argmax(pred))
-    conf  = float(np.max(pred)) * 100
-    with c2:
-        st.subheader('Result')
-        (st.success if cidx==0 else st.error)('Healthy 🟢' if cidx==0 else 'Sick 🔴')
-        st.metric('Confidence', f'{conf:.1f}%'); st.progress(int(conf))
- 
+    
+    try:
+        pred  = model.predict(arr)
+        cidx  = int(np.argmax(pred))
+        conf  = float(np.max(pred)) * 100
+        with c2:
+            st.subheader('Result')
+            (st.success if cidx==0 else st.error)('Healthy 🟢' if cidx==0 else 'Sick 🔴')
+            st.metric('Confidence', f'{conf:.1f}%'); st.progress(int(conf))
+    except NameError:
+        st.error("الموديل لم يتم تحميله بشكل صحيح، تأكد من الرابط.")
+
 # ===== Sensor Data =====
 st.divider()
 st.subheader('📡 Smart Sensor Alerts')
- 
+
 temp=hum=body=0.0; air=0
 try:
     r = requests.get(f'http://{ESP32_IP}/data', timeout=1.2)
@@ -83,25 +111,25 @@ try:
         body=d.get('body_temp',0); air=d.get('air',0)
     st.sidebar.success('📡 Main Board: Connected')
 except: st.sidebar.error('❌ Main Board: Offline')
- 
+
 tS = '🟢 OK' if 20<=temp<=38  else '⚠️ DANGER'
 hS = '🟢 OK' if 30<=hum<=70   else '⚠️ DANGER'
 bS = '🟢 OK' if 37<=body<=39  else '⚠️ DANGER'
 aS = '🟢 OK' if air<500       else '⚠️ DANGER'
- 
+
 c1,c2,c3,c4 = st.columns(4)
 c1.metric('🌡 Temp',      f'{temp:.1f} °C',  tS)
 c2.metric('💧 Humidity',  f'{hum:.1f} %',    hS)
 c3.metric('🐄 Body Temp', f'{body:.1f} °C',  bS)
-c4.metric('🌫 Air',       str(air),           aS)
- 
+c4.metric('🌫 Air',       str(air),          aS)
+
 # ===== Alerts =====
 st.divider()
 n = sum(1 for s in [tS,hS,bS,aS] if 'DANGER' in s)
 if n==0: st.success('✅ All Systems Normal')
 elif n==1: st.warning('⚠️ One sensor out of range')
 else: st.error('🚨 CRITICAL: Multiple sensors in danger!')
- 
+
 # ===== Historical Charts =====
 st.divider()
 st.subheader('📊 Live Sensor Charts')
@@ -110,9 +138,7 @@ if 'df' not in st.session_state:
 st.session_state.df = pd.concat([st.session_state.df,
     pd.DataFrame([{'Temp':temp,'Humidity':hum,'Body':body,'Air':air}])],
     ignore_index=True).iloc[-30:]
- 
+
 ca, cb2 = st.columns(2)
 ca.line_chart(st.session_state.df[['Temp','Body']])
 cb2.line_chart(st.session_state.df[['Humidity','Air']])
-
-
